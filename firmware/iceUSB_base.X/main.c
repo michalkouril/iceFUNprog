@@ -4,6 +4,7 @@
 #include "iceFUN.h"
 
 void commandManager(void);
+void Get_USB_serial(void);
 
 void iceFUNinit(void)
 {
