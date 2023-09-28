@@ -6,24 +6,18 @@
 
 void Get_USB_serial(void);
 
+#define UART_TIMEOUT 65535
+#define USB_TIMEOUT 65535
+
 extern uint8_t usbBuf[USB_SIZE];
 extern uint16_t usbIdx;
 extern uint8_t BytesToSend;
-
-extern uint8_t uartRxBuf[UART_BUF_SIZE];
-extern uint16_t uartRxHead;
-extern uint16_t uartRxTail;
-
-extern uint8_t uartTxBuf[UART_BUF_SIZE];
-extern uint16_t uartTxHead;
-extern uint16_t uartTxTail;
-
-extern uint8_t uartMode; // default 0 -- original; 1 -- uart pass through
+uint8_t Counter = 1;
 
 enum cmds {
-    AD0=0xa0, AD1, AD2, AD3, AD4,
-    DONE=0xb0, GET_VER, RESET_FPGA, ERASE_CHIP, ERASE_64K, PROG_PAGE, READ_PAGE, VERIFY_PAGE, GET_CDONE, RELEASE_FPGA,         
-    UARTMODE=0xc0, UARTRX, UARTTX, UARTINFO
+    AD1=0xa1, AD2, AD3, AD4,
+    DONE=0xb0, GET_VER, RESET_FPGA, ERASE_CHIP, ERASE_64K, PROG_PAGE, READ_PAGE, VERIFY_PAGE, GET_CDONE, RELEASE_FPGA,
+    WRITE_READ_USART=0xc0, GET_SET_USART_CONFIG
 };
 
 
@@ -123,8 +117,8 @@ void verifyPage(void)    // verify the page currently in memory
         uint8_t byte = flashRW(0);
         if(byte!=usbBuf[usbIdx]) {
             CS = 1;
-            usbBuf[0] = -1;                  // fail
-            usbBuf[1] = usbIdx;
+            usbBuf[0] = (uint8_t)(-1);                  // fail
+            usbBuf[1] = (uint8_t)(usbIdx%256);
             usbBuf[2] = usbBuf[usbIdx];
             usbBuf[3] = byte;
             return;
@@ -132,6 +126,89 @@ void verifyPage(void)    // verify the page currently in memory
     }
     CS = 1;
     usbBuf[0] = 0;                  // success
+}
+
+
+void SendToSerial(uint8_t SendLen)
+{
+    uint8_t usbBufStart = 3; // cmd(1byte),sendlen(1byte),recvlen(1byte)
+    uint8_t i;
+    for(i=0;i<SendLen;i++) {
+       TXREG = usbBuf[i+usbBufStart];                 // send data to FPGA
+       NOP();
+       NOP();
+       while(!PIR1bits.TXIF);
+    }
+}
+
+void RecvFromSerial(uint8_t RecvLen)
+{
+    uint8_t usbBufStart = 2; // will be >0 once we implement sending length in response
+    uint8_t RecvLenCurrent=0;
+    usbBuf[1] = 0; // all ok
+    for(RecvLenCurrent=0;RecvLenCurrent<RecvLen;RecvLenCurrent++) {
+       uint16_t RecvTimeout = UART_TIMEOUT;
+
+       // wait for incoming character or timeout
+       while(PIR1bits.RCIF == false && RecvTimeout>0) RecvTimeout--;
+
+       // record timeout or frameing/overflow error and break
+       if (RecvTimeout == 0) { usbBuf[1] = 1; break; }
+       if (RCSTAbits.FERR)   { usbBuf[1] = 2; break; }
+       if (RCSTAbits.OERR)   { 
+           // to clear -- 
+           RCSTAbits.CREN = 0;
+           NOP();
+           RCSTAbits.CREN = 1;
+           usbBuf[1] = 3; 
+           break; 
+       }
+
+       // record incoming byte
+       usbBuf[RecvLenCurrent+usbBufStart] = RCREG;
+       PIR1bits.RCIF = 0; // clear interrupt flag
+       NOP();
+       NOP();
+    }
+    usbBuf[0] = RecvLenCurrent;
+    BytesToSend = RecvLenCurrent+usbBufStart;
+}
+
+void SetUSARTConfig()
+{
+  switch(usbBuf[1]) {
+    case 1:
+      TXSTA = usbBuf[2];
+      break;
+    case 2: 
+      RCSTA = usbBuf[2];
+      break;
+    case 3: 
+      BAUDCON = usbBuf[2];
+      break;
+    case 4: 
+      SPBRG = usbBuf[2]; // +256*usbBuf[2];
+      break;
+    default:
+      break;
+  }
+}
+
+void GetUSARTConfig()
+{
+  // usbBuf[0] = usbBuf[0];
+  usbBuf[1] = TXSTA;
+  usbBuf[2] = RCSTA;
+  usbBuf[3] = BAUDCON;
+  usbBuf[4] = SPBRG & 0xff;
+  usbBuf[5] = (SPBRG >> 8) & 0xff;
+  usbBuf[6] = USB_SIZE & 0xff;
+  usbBuf[7] = (USB_SIZE >> 8) & 0xff;
+  usbBuf[8] = USB_TIMEOUT & 0xff;
+  usbBuf[9] = (USB_TIMEOUT >> 8) & 0xff;
+  usbBuf[10] = UART_TIMEOUT & 0xff;
+  usbBuf[11] = (UART_TIMEOUT >> 8) & 0xff;
+  BytesToSend = 12;
 }
 
 //void releaseFPGA(void)
@@ -226,102 +303,36 @@ uint16_t x;
             BytesToSend = 1;
             usbIdx = 0;
             break;
-        case AD0:                           // Get Analogue channel
-        case AD1:
+        case WRITE_READ_USART:
+        {
+            uint16_t RecvTimeout = USB_TIMEOUT;
+            while(usbIdx<3 && RecvTimeout--) Get_USB_serial();    // make sure lengths (recvlen/sendlen) are in
+            if (RecvTimeout==0) { usbIdx=0; break; }
+
+            uint8_t SendLen = usbBuf[1];
+            uint8_t RecvLen = usbBuf[2];
+
+            RecvTimeout = USB_TIMEOUT;
+            while(usbIdx<SendLen+3 && RecvTimeout--) Get_USB_serial();     // wait for data
+            if (RecvTimeout==0) { usbIdx=0; break; }
+
+            if (SendLen > 0) SendToSerial(SendLen);
+            if (RecvLen > 0) RecvFromSerial(RecvLen);
+            usbIdx = 0;
+        }
+            break;
+        case GET_SET_USART_CONFIG:
+            if (usbIdx>1) SetUSARTConfig();
+            GetUSARTConfig();
+            usbIdx = 0;
+            break;
+        case AD1:                           // Get Analogue channel
         case AD2:
         case AD3:
         case AD4:
             ADhandler(usbBuf[0]);
             usbBuf[0] = ADRESH;
             usbBuf[1] = ADRESL;
-            BytesToSend = 2;
-            usbIdx = 0;
-            break;
-            
-        case UARTMODE:
-            while(usbIdx<2) Get_USB_serial();    // make sure address is in
-            uartMode = usbBuf[1];
-            usbBuf[0] = 0;
-            usbBuf[1] = uartMode;
-            BytesToSend = 2;
-            usbIdx = 0;
-            break;
-            
-        case UARTINFO:
-            usbBuf[0] = 0;
-            usbBuf[1] = uartMode;
-            usbBuf[2] = SPBRGL;
-            usbBuf[3] = SPBRGH;
-            usbBuf[4] = UART_BUF_SIZE%256;
-            usbBuf[5] = UART_BUF_SIZE/256;
-            usbBuf[6] = uartTxHead%256;;
-            usbBuf[7] = uartTxHead/256;
-            usbBuf[8] = uartTxTail%256;
-            usbBuf[9] = uartTxTail/256;
-            usbBuf[10] = UART_BUF_SIZE%256;
-            usbBuf[11] = UART_BUF_SIZE/256;
-            usbBuf[12] = uartRxHead%256;
-            usbBuf[13] = uartRxHead/256;
-            usbBuf[14] = uartRxTail%256;
-            usbBuf[15] = uartRxTail/256;
-            BytesToSend = 16;
-            usbIdx = 0;
-            break;
-            
-        case UARTRX:
-            while(usbIdx<3) Get_USB_serial();    // make sure the size is in
-            if (uartMode != 1) break;
-            // send uart buffer to PC (max 256?)
-            uint16_t respSize = usbBuf[1]+256*usbBuf[2];   
-            uint16_t idx = uartRxTail;
-            usbIdx = 2;
-            while(idx!=uartRxHead) {
-                idx++;
-                if (idx==UART_BUF_SIZE) idx=0;
-                usbBuf[usbIdx] = uartRxBuf[idx];
-                usbIdx++;
-                if (usbIdx-2 == respSize) break; // max send size
-            }
-            uartRxTail = idx;
-            
-            // respond with how many bytes we are sending and the bytes
-            usbBuf[0] = (usbIdx-2)%256;
-            usbBuf[1] = (usbIdx-2)/256;
-            BytesToSend = respSize+2;
-            usbIdx = 0;
-            break;
-            
-        case UARTTX:
-            // send usbBuf to uart
-            while(usbIdx<3) Get_USB_serial();    // make sure the size is in
-            uint16_t expectedSize = usbBuf[1]+256*usbBuf[2];
-            while(usbIdx<(expectedSize+3)) Get_USB_serial();    // make sure the size is in
-            if (uartMode != 1) 
-            {
-                usbBuf[0] = 0;
-                usbBuf[1] = 0;
-                BytesToSend = 2;
-                usbIdx = 0;
-                break;
-            }
-            // copy incoming data to Uart Tx buffer
-            uint16_t i;
-            for(i=0;i<expectedSize;i++)
-            {
-               uint8_t x=usbBuf[i+3];
-               uint16_t incUartTxHead=uartTxHead+1;
-               if (incUartTxHead==UART_BUF_SIZE) incUartTxHead=0;
-               if (incUartTxHead==uartTxTail) break; // ignore -- out of space
-               else
-               {
-                  uartTxHead = incUartTxHead;
-                  uartTxBuf[uartTxHead]=x;
-               }              
-            }
-            
-            // respond with how many bytes we received
-            usbBuf[0] = i%256;
-            usbBuf[1] = i/256;
             BytesToSend = 2;
             usbIdx = 0;
             break;
@@ -339,28 +350,12 @@ unsigned char x;
         NOP();
         RCSTAbits.CREN = 1;
     }
-    // if UART data available
     if(PIR1bits.RCIF) {
         x = RCREG;
-        if (uartMode == 1) 
-        {
-            // if head==tail -- nothing in the buffer
-            uint16_t incUartRxHead=uartRxHead+1;
-            if (incUartRxHead==UART_BUF_SIZE) incUartRxHead=0;
-            if (incUartRxHead==uartRxTail) return; // ignore -- out of space
-            else
-            {
-               uartRxHead = incUartRxHead;
-               uartRxBuf[uartRxHead]=x;
-            }
-            return;
-        } else
         switch(x) {
-            case 0xa0:  ADCON0 = (29<<2)+1;      // Temp
-                        break;                         
-            case 0xa1:  ADCON0 = (4<<2)+1;      // AN4
+            case 0xa1:  ADCON0 = (4<<2)+1;      // AN5
                         break;
-            case 0xa2:  ADCON0 = (5<<2)+1;      // AN5
+            case 0xa2:  ADCON0 = (5<<2)+1;      // AN4
                         break;
             case 0xa3:  ADCON0 = (9<<2)+1;      // AN9
                         break;
@@ -371,11 +366,9 @@ unsigned char x;
     }
     else {
         switch(chn) {
-            case 0xa0:  ADCON0 = (29<<2)+1;      // Temp
-                        break;                       
-            case 0xa1:  ADCON0 = (4<<2)+1;      // AN4
+            case 0xa1:  ADCON0 = (4<<2)+1;      // AN5
                         break;
-            case 0xa2:  ADCON0 = (5<<2)+1;      // AN5
+            case 0xa2:  ADCON0 = (5<<2)+1;      // AN4
                         break;
             case 0xa3:  ADCON0 = (9<<2)+1;      // AN9
                         break;
@@ -387,7 +380,7 @@ unsigned char x;
 
     ADCON1 = 0xE0;
     ADCON2 = 0;
-    for(x=0; x<50; x++); // min 200us?
+    for(x=0; x<50; x++);
     ADCON0bits.ADGO = 1;
     NOP();
     NOP();

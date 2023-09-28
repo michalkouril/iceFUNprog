@@ -4,6 +4,26 @@
     <logicalFolder name="HeaderFiles"
                    displayName="Header Files"
                    projectFiles="true">
+      <logicalFolder name="MCC Generated Files"
+                     displayName="MCC Generated Files"
+                     projectFiles="true">
+        <logicalFolder name="usb" displayName="usb" projectFiles="true">
+          <itemPath>mcc_generated_files/usb/usb_ch9.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device.h</itemPath>
+          <itemPath>mcc_generated_files/usb/fixed_address_memory.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_hal_pic16f1.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device_local.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device_config.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device_cdc.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_common.h</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_hal.h</itemPath>
+        </logicalFolder>
+        <itemPath>mcc_generated_files/interrupt_manager.h</itemPath>
+        <itemPath>mcc_generated_files/mcc.h</itemPath>
+        <itemPath>mcc_generated_files/pin_manager.h</itemPath>
+        <itemPath>mcc_generated_files/device_config.h</itemPath>
+      </logicalFolder>
       <itemPath>iceFUN.h</itemPath>
     </logicalFolder>
     <logicalFolder name="LinkerScript"
@@ -17,6 +37,24 @@
     <logicalFolder name="SourceFiles"
                    displayName="Source Files"
                    projectFiles="true">
+      <logicalFolder name="MCC Generated Files"
+                     displayName="MCC Generated Files"
+                     projectFiles="true">
+        <logicalFolder name="usb" displayName="usb" projectFiles="true">
+          <logicalFolder name="utilities" displayName="utilities" projectFiles="true">
+            <itemPath>mcc_generated_files/usb/utilities/mchpcdc_template.inf</itemPath>
+          </logicalFolder>
+          <itemPath>mcc_generated_files/usb/example_mcc_usb_cdc.c</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device_events.c</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device.c</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_descriptors.c</itemPath>
+          <itemPath>mcc_generated_files/usb/usb_device_cdc.c</itemPath>
+        </logicalFolder>
+        <itemPath>mcc_generated_files/interrupt_manager.c</itemPath>
+        <itemPath>mcc_generated_files/mcc.c</itemPath>
+        <itemPath>mcc_generated_files/pin_manager.c</itemPath>
+        <itemPath>mcc_generated_files/device_config.c</itemPath>
+      </logicalFolder>
       <itemPath>main.c</itemPath>
       <itemPath>USB_Serial.c</itemPath>
       <itemPath>commandManager.c</itemPath>
@@ -38,11 +76,11 @@
         <targetPluginBoard></targetPluginBoard>
         <platformTool>noID</platformTool>
         <languageToolchain>XC8</languageToolchain>
-        <languageToolchainVersion>2.36</languageToolchainVersion>
+        <languageToolchainVersion>2.45</languageToolchainVersion>
         <platform>4</platform>
       </toolsSet>
       <packs>
-        <pack name="PIC12-16F1xxx_DFP" vendor="Microchip" version="1.1.53"/>
+        <pack name="PIC12-16F1xxx_DFP" vendor="Microchip" version="1.7.242"/>
       </packs>
       <ScriptingSettings>
       </ScriptingSettings>
@@ -688,12 +726,15 @@
       </XC8-CO>
       <XC8-config-global>
         <property key="advanced-elf" value="true"/>
-        <property key="gcc-opt-driver-new" value="false"/>
-        <property key="gcc-opt-std" value="--std=c89"/>
+        <property key="constdata-progmem" value="true"/>
+        <property key="gcc-opt-driver-new" value="true"/>
+        <property key="gcc-opt-std" value="-std=c99"/>
         <property key="gcc-output-file-format" value="dwarf-3"/>
+        <property key="mapped-progmem" value="false"/>
         <property key="omit-pack-options" value="false"/>
         <property key="omit-pack-options-new" value="1"/>
         <property key="output-file-format" value="-mcof,+elf"/>
+        <property key="smart-io-format" value=""/>
         <property key="stack-size-high" value="auto"/>
         <property key="stack-size-low" value="auto"/>
         <property key="stack-size-main" value="auto"/>
