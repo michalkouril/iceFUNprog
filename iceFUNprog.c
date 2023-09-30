@@ -33,7 +33,10 @@
 
 enum cmds
 {
-    DONE = 0xb0, GET_VER, RESET_FPGA, ERASE_CHIP, ERASE_64k, PROG_PAGE, READ_PAGE, VERIFY_PAGE, GET_CDONE, RELEASE_FPGA
+    AD0=0xa0, AD1, AD2, AD3, AD4,
+    DONE = 0xb0, GET_VER, RESET_FPGA, ERASE_CHIP, ERASE_64k, PROG_PAGE, READ_PAGE, VERIFY_PAGE, GET_CDONE, RELEASE_FPGA,
+    WRITE_READ_USART=0xc0, GET_SET_USART_CONFIG
+    // UARTMODE=0xc0, UARTRX, UARTTX, UARTINFO
 };
 
 #define FLASHSIZE 1048576	// 1MByte because that is the size of the Flash chip
@@ -57,6 +60,9 @@ static void help(const char *progname)
 	fprintf(stderr, "                        (append 'k' to the argument for size in kilobytes,\n");
 	fprintf(stderr, "                         or 'M' for size in megabytes)\n");
 	fprintf(stderr, "                         or prefix '0x' to the argument for size in hexdecimal\n");
+	fprintf(stderr, "  -A <ADC number>       get ADC result. ADC number=1..4\n");
+	fprintf(stderr, "  -I <val>              get UART reg info. If val > 1 set it as SPBRG. (25 ... 115,200b)\n");
+	fprintf(stderr, "  -R <val>              Send <val> to FPGA over USART and [optionally] wait for reponse\n");
 	fprintf(stderr, "  --help\n");
 	fprintf(stderr, "  -v                    skip verification\n");
 	fprintf(stderr, "Example:\n");
@@ -84,6 +90,73 @@ int GetVersion(void)								// print firmware version number
 	}
 }
 
+int GetADC(int adc)
+{
+	switch(adc) {
+	case 0: SerBuf[0] = AD0; break;
+	case 1: SerBuf[0] = AD1; break;
+	case 2: SerBuf[0] = AD2; break;
+	case 3: SerBuf[0] = AD3; break;
+	case 4: SerBuf[0] = AD4; break;
+	default:
+		fprintf(stderr, "%s: Invalid ADC number (%d)\n", ProgName, adc);
+		return EXIT_FAILURE;
+	}
+	write(fd, SerBuf, 1);
+	read(fd, SerBuf, 2);
+	printf("AD%d: %d\n", adc, SerBuf[0]*256+SerBuf[1]);
+	return 0;
+}
+
+void GetUARTInfo(int val)
+{
+	SerBuf[0] = GET_SET_USART_CONFIG;
+
+  SerBuf[1] = 4;
+  SerBuf[2] = val; // set SPBRG to 25 115,200b -- theoretically
+  
+	int y=write(fd, SerBuf, (val==1?1:3));
+
+	// printf("GetUARTInfo sending (%d): len %d (%X ...)\n", y, 1, SerBuf[0]);
+	int i=read(fd, SerBuf, 16); // ret, MODE, SPBRG, TXSIZE.., TXHEADL, TXHEADH, TXTAIL.., RXSIZE..., RXHEAD.., RXTAIL..
+	printf("GetUartInfo: ret: %02x TXSTA: %02x RCSTA: %02x BAUDCON: %02x SPBRG: %d USB buffer size: %d USB timeout: %d UART timeout: %d\n", 
+                    SerBuf[0], SerBuf[1], SerBuf[2], SerBuf[3], 
+                    SerBuf[4]+SerBuf[5]*256, 
+                    SerBuf[6]+SerBuf[7]*256, 
+                    SerBuf[8]+SerBuf[9]*256, 
+                    SerBuf[10]+SerBuf[11]*256 
+                    );
+}
+
+void SendRecvUARTData(char *buf)
+{
+	uint8_t len=255;
+	uint8_t send_len=strlen(buf);
+
+	SerBuf[0] = WRITE_READ_USART;
+	SerBuf[1] = send_len; 
+	SerBuf[2] = len;
+  strcpy((char*)(&(SerBuf[3])), buf);
+  send_len += 3;
+
+	int y=write(fd, SerBuf, send_len);
+	// printf("SendRecvUARTData sending (%d): len %d (%X %X %X %X %X %X...)\n", y, len, 
+  //     SerBuf[0], SerBuf[1], SerBuf[2], SerBuf[3], SerBuf[4], SerBuf[5]);
+
+	int i=read(fd, SerBuf, len+2);
+  // returns err -- 0..no error,1..timeout, 2..framing error, 3..overrun error
+	printf("SendRecvUARTData(%d): len %d err: %d (%02X %02X %02X %02X %02X %02X ...)\n", i, SerBuf[0], SerBuf[1], 
+                                            SerBuf[0], SerBuf[1], SerBuf[2], SerBuf[3], SerBuf[4], SerBuf[5]);
+
+  for(int j=0;j<i;j++) {
+    // printf("%02X ", SerBuf[j+2]);
+    printf("%c", SerBuf[j+2]);
+  }
+  printf("\n");
+	// len=SerBuf[0]+256*SerBuf[1];
+	// for(int i=0;i<len;i++) printf("%X(%c) ", SerBuf[i+2], SerBuf[i+2]);
+}
+
 int resetFPGA(void)									// reset the FPGA and return the flash ID bytes
 {
 	SerBuf[0] = RESET_FPGA;
@@ -108,6 +181,12 @@ int main(int argc, char **argv)
 const char *portPath = "/dev/serial/by-id/";
 const char *filename = NULL;
 char portName[300];
+int adc=-1;
+int uartmode=-1;
+int uartinfo=0;
+int uarttx_len=0;
+int uartrx=0;
+char uarttx_data[300]="";
 int length;
 struct termios config;
 
@@ -125,8 +204,8 @@ struct termios config;
 				break;
 			}
 		}
-	}
-	closedir(d);
+		closedir(d);
+	}	
 
 /* Decode command line parameters */
 	static struct option long_options[] = {
@@ -136,10 +215,22 @@ struct termios config;
 
 	int opt;
   char *endptr;
-	while ((opt = getopt_long(argc, argv, "P:o:vh", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "P:o:A:U:T:R:I:vh", long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'P': /* Serial port */
 			strcpy(portName, optarg);
+			break;
+		case 'A': /* ADC */
+			adc = atoi(optarg);
+			break;
+		case 'R': /* UART RX */
+			uartrx = 1;
+			uarttx_len = strlen(optarg);
+			strncpy(uarttx_data, optarg, uarttx_len);
+      uarttx_data[uarttx_len] = 0;
+			break;
+		case 'I': /* UART Info -- if param > 1 -- set SPBRG */
+			uartinfo = atoi(optarg);
 			break;
 		case 'h':
 		case -2:
@@ -191,6 +282,21 @@ struct termios config;
 		fprintf(stderr, "Try `%s --help' for more information.\n", argv[0]);
 		close(fd);
 		return EXIT_FAILURE;
+	}
+
+	if (adc != -1) {
+	    GetADC(adc);
+	    return 0;
+	}
+
+	if (uartinfo != 0) {
+	    GetUARTInfo(uartinfo); // SPBRG if > 1
+	    return 0;
+	}
+
+	if (uartrx != 0) {
+	    SendRecvUARTData(uarttx_data);
+	    return 0;
 	}
 
 	FILE* fp = fopen(filename, "rb");
